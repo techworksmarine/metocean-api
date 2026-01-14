@@ -5,6 +5,7 @@ import tarfile
 import pandas as pd
 import xarray as xr
 import numpy as np
+import zipfile
 from ..product import Product
 from ..convention import Convention
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 
 def find_product(name: str) -> Product:
     match name:
+        case "ERA5_ts":
+            return ERA5_ts(name)
         case "ERA5":
             return ERA5(name)
         case "GTSM":
@@ -159,6 +162,160 @@ class ERA5(Product):
 
     def download_temporary_files(self, ts: TimeSeries, use_cache: bool = False) -> Tuple[List[str], float, float]:
         raise NotImplementedError(f"Not implemented for {self.name}")
+
+
+class ERA5_ts(Product):
+
+    @property
+    def convention(self) -> Convention:
+        return Convention.METEOROLOGICAL
+
+    def import_data(self, ts: TimeSeries, save_csv=True, save_nc=False, use_cache=False):
+        """
+        Extracts times series of the nearest grid point (lon,lat) from
+        ERA5 reanalysis and save it as netcdf.
+        """
+        # Download the data as a csv
+        folder='cache'
+
+        if ts.variable == []:
+            ts.variable = [
+                "100m_u_component_of_wind",
+                "100m_v_component_of_wind",
+                "10m_u_component_of_wind",
+                "10m_v_component_of_wind",
+                '10m_wind_gust_since_previous_post_processing',
+                "2m_temperature",
+                'sea_surface_temperature',
+                "instantaneous_10m_wind_gust",
+                "mean_direction_of_total_swell",
+                "mean_direction_of_wind_waves",
+                "mean_period_of_total_swell",
+                "mean_period_of_wind_waves",
+                "mean_wave_direction",
+                "mean_wave_period",
+                "peak_wave_period",
+                "significant_height_of_combined_wind_waves_and_swell",
+                "significant_height_of_total_swell",
+                "significant_height_of_wind_waves",
+            ]
+
+        filename = self.__download_era5_from_cds(ts.start_time, ts.end_time, ts.lon, ts.lat, ts.variable, folder=folder)
+        # Unzip file
+        #filename includes folder
+        os.makedirs(filename, exist_ok=True)
+        zip_file_name=filename+'.zip'
+        try:
+            # Open the zip file in read mode
+            with zipfile.ZipFile(zip_file_name, 'r') as zip_ref:
+                # Extract all contents to the destination directory
+                zip_ref.extractall(filename)
+                print(f"Successfully extracted all files to '{filename}'")
+        except FileNotFoundError:
+            print(f"Error: The file '{zip_file_name}' was not found.")
+        except zipfile.BadZipFile:
+            print(f"Error: '{zip_file_name}' is not a valid zip file.")
+
+        # List files inside new folder
+        entries = os.listdir(filename)
+        
+        # Read netcdfs
+        dslist = []
+        for entry in entries:
+            ds1=xr.open_dataset(filename+"/"+entry,mask_and_scale=True,decode_times=True)
+            ds1 = ds1.rename({'valid_time': 'time'})
+            dslist.append(ds1)
+        ds = xr.merge(dslist)
+        lat_near=ds.latitude.values
+        lon_near=ds.longitude.values
+        for ds1 in dslist:
+            ds1.close()
+            del ds1
+        # Add wind speed to dataset
+        if '10m_u_component_of_wind' in ts.variable:
+            ds=ds.assign(wind_speed_10m=np.sqrt((ds["u10"]**2+ds["v10"]**2)))
+            ds=ds.assign(wind_direction_10m=(180+180/np.pi*np.arctan2(ds["u10"],ds["v10"]))%360)
+        if '100m_u_component_of_wind' in ts.variable:
+            ds=ds.assign(wind_speed_100m=np.sqrt((ds["u100"]**2+ds["v100"]**2)))
+            ds=ds.assign(wind_direction_100m=(180+180/np.pi*np.arctan2(ds["u100"],ds["v100"]))%360)
+        
+        str_lon=f'{lon_near:0.2f}'
+        str_lat=f'{lat_near:0.2f}'
+        del lon_near,lat_near
+        start_time = pd.Timestamp(ts.start_time)
+        end_time = pd.Timestamp(ts.end_time)
+        days =  pd.date_range(start=start_time , end=end_time, freq='D')
+        output_file=folder+'/ERA5_lon'+str_lon+'lat'+str_lat+'_'+days[0].strftime('%Y%m%d')+'_'+days[-1].strftime('%Y%m%d')
+        if save_nc:
+            ds.to_netcdf(output_file+'.nc')
+        elif save_csv:
+            lon_near = ds.longitude.values
+            lat_near = ds.latitude.values
+            header_lines =[f'#{ts.product};LONGITUDE:{lon_near:0.2f};LATITUDE:{lat_near:0.2f}']
+            header_lines.append("#Variable_name;standard_name;long_name;units")
+            var_names = ["time"]
+            for name,vardata in ds.data_vars.items():
+                varattr = vardata.attrs
+                standard_name =varattr.get("standard_name", "-")
+                long_name = varattr.get("long_name", "-")
+                units = varattr.get("units", "-")
+                header_lines.append("#" + name + ";" + standard_name + ";" + long_name + ";" + units)
+                var_names.append(name)
+            # Add column names last
+            header_lines.append(",".join(var_names))
+            header = "\n".join(header_lines) + "\n"
+            df = ds.to_dataframe()
+            df.drop(columns=['latitude','longitude'],inplace=True)
+            with open(output_file+'.csv', "w", encoding="utf8", newline="") as f:
+                f.write(header)
+                df.to_csv(f, header=False, encoding=f.encoding, index_label="time")
+        else:
+            raise Exception("Either save_csv or save_nc must be True, one out of two must be True, not both")
+        del lon_near,lat_near
+
+        return df
+
+    def __download_era5_from_cds(self,start_time, end_time, lon, lat, variable, folder='cache') -> str:
+        """
+        Downloads ERA5 timeseries data from the Copernicus Climate Data Store for a
+        given point and time period as a netcdf
+        """
+        import cdsapi #Optional dependency
+        start_time = pd.Timestamp(start_time)
+        end_time = pd.Timestamp(end_time)
+        c = cdsapi.Client()
+
+        # Create directory
+        try:
+            # Create target Directory
+            os.mkdir(folder)
+            print("Directory " , folder ,  " Created ")
+        except FileExistsError:
+            print("Directory " , folder ,  " already exists")
+            
+        days =  pd.date_range(start=start_time , end=end_time, freq='D')
+        # Create string for dates
+        dates = days[0].strftime('%Y-%m-%d')+'/'+days[-1].strftime('%Y-%m-%d')
+        #dates = '/'.join(dates)
+        filename = f'{folder}/ERA5_download_{dates.replace("/","_").replace("-","")}'
+        if os.path.exists(filename+'.zip'):
+            print(f'Reusing cached file {filename}.zip')
+            return filename
+        
+        cds_command = {
+            'variable': variable,
+            'date': [dates],
+            'location': {'longitude': lon, 'latitude': lat},
+            'data_format': 'netcdf',
+            'description': ['surface','wave']
+        }
+        print('Download timeseries')
+        c.retrieve('reanalysis-era5-single-levels-timeseries', cds_command, filename+'.zip')
+        return filename
+    
+    def download_temporary_files(self, ts: TimeSeries, use_cache: bool = False) -> Tuple[List[str], float, float]:
+        raise NotImplementedError(f"Not implemented for {self.name}")
+
 
 class GTSM(Product):
 
