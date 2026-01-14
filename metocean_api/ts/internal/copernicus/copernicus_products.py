@@ -128,7 +128,6 @@ class WA_NWShelf(Product):
             filename = f'{folder}/NWShelf_'+"lon"+str(lon)+"lat"+str(lat)+"_"+days[0].strftime('%Y%m%d')+'_'+days[-1].strftime('%Y%m%d')+'_'+variable[i]+".nc"
             filename_list = np.append(filename_list,filename)
 
-
             if use_cache and os.path.isfile(filename):
                 print('Reuse cached file for variable('+str(i+1)+'/'+str(len(variable)) +')' +':'+variable[i])
             else:
@@ -244,7 +243,7 @@ class PHY_NWShelf(Product):
             if variable[i] == 'zos':
                 dataset_id = "cmems_mod_nws_phy-ssh_my_7km-2D_PT1H-i"
             elif variable[i] == 'uo' or variable[i] == 'vo':
-                dataset_id = "cmems_mod_nws_phy-uv_my_7km-2D_PT1H-i"
+                dataset_id = "cmems_mod_nws_phy-uv_my_7km-2D_PT1H-i"    
             else:
                 raise NotImplementedError(f"Define product name for variable {variable[i]}")
             

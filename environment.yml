@@ -18,3 +18,4 @@ dependencies:
   - metpy
   - tqdm
   - cfgrib
+  - copernicusmarine
