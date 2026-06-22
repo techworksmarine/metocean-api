@@ -245,9 +245,9 @@ class ERA5_ts(Product):
         start_time = pd.Timestamp(ts.start_time)
         end_time = pd.Timestamp(ts.end_time)
         days =  pd.date_range(start=start_time , end=end_time, freq='D')
-        output_file=folder+'/ERA5_lon'+str_lon+'lat'+str_lat+'_'+days[0].strftime('%Y%m%d')+'_'+days[-1].strftime('%Y%m%d')
+        #output_file=folder+'/ERA5_lon'+str_lon+'lat'+str_lat+'_'+days[0].strftime('%Y%m%d')+'_'+days[-1].strftime('%Y%m%d')
         if save_nc:
-            ds.to_netcdf(output_file+'.nc')
+            ds.to_netcdf(ts.datafile.replace('csv','nc'))
         elif save_csv:
             lon_near = ds.longitude.values
             lat_near = ds.latitude.values
@@ -266,7 +266,7 @@ class ERA5_ts(Product):
             header = "\n".join(header_lines) + "\n"
             df = ds.to_dataframe()
             df.drop(columns=['latitude','longitude'],inplace=True)
-            with open(output_file+'.csv', "w", encoding="utf8", newline="") as f:
+            with open(ts.datafile, "w", encoding="utf8", newline="") as f:
                 f.write(header)
                 df.to_csv(f, header=False, encoding=f.encoding, index_label="time")
         else:
